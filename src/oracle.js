@@ -59,6 +59,10 @@ export async function keygen() {
  * Build and ML-DSA-sign a time-window journal committing `document`, then wrap
  * it in a mock RISC Zero receipt.
  *
+ * The document hash IS the Roughtime nonce: rather than a random nonce, the
+ * document itself is the value presented to the oracle, so the signed response
+ * binds the attested time window directly to the document.
+ *
  * @param {{publicKey: Uint8Array, secretKey: Uint8Array}} keypair
  * @param {Uint8Array|string} document  the document to time-stamp
  * @param {{radiusMs?: number, source?: string, domain?: string}} [opts]
@@ -69,13 +73,12 @@ export async function proveDocumentTimeWindow(keypair, document, opts = {}) {
   const radiusMs = opts.radiusMs ?? 10_000;
   const source = opts.source ?? "local-demo-roughtime";
 
-  const nonce = new Uint8Array(32);
-  crypto.getRandomValues(nonce);
+  // The document is the nonce.
+  const nonce = await sha256Hex(docBytes);
 
   const journal = {
     domain: opts.domain ?? DOMAIN,
-    document_sha256: await sha256Hex(docBytes),
-    nonce_hash: await sha256Hex(nonce),
+    nonce,
     midpoint_unix_ms: Date.now(),
     radius_ms: radiusMs,
     source,
@@ -98,9 +101,10 @@ export async function proveDocumentTimeWindow(keypair, document, opts = {}) {
 }
 
 /**
- * Verify a receipt: the ML-DSA signature over the journal, that the journal
- * commits `document` (if provided), and that `atMs` falls inside the attested
- * window. Mirrors what an on-chain verifier would enforce (minus the real seal).
+ * Verify a receipt: the ML-DSA signature over the journal, that the journal's
+ * nonce commits `document` (if provided), and that `atMs` falls inside the
+ * attested window. Mirrors what an on-chain verifier would enforce (minus the
+ * real seal).
  *
  * @param {Uint8Array|{publicKey: Uint8Array}} publicKeyOrKeypair
  * @param {object} artifact  receipt from {@link proveDocumentTimeWindow}
@@ -120,7 +124,8 @@ export async function verifyDocumentTimeWindow(publicKeyOrKeypair, artifact, opt
 
   let documentOk = true;
   if (opts.document !== undefined) {
-    documentOk = (await sha256Hex(toBytes(opts.document))) === j.document_sha256;
+    // The document is the nonce: re-derive and compare.
+    documentOk = (await sha256Hex(toBytes(opts.document))) === j.nonce;
   }
 
   const lower = j.midpoint_unix_ms - j.radius_ms;
