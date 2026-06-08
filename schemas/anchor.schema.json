@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thr34ds.dev/schemas/anchor.schema.json",
+  "title": "Anchor",
+  "description": "An external time attestation bound to a sealed entry (e.g. an on-chain Boundless settlement).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "algorithm", "server", "proof"],
+  "properties": {
+    "kind": { "type": "string", "description": "Anchor source, e.g. \"boundless\", \"roughtime\", \"rfc3161\"." },
+    "algorithm": { "type": "string", "description": "Signature/proof system, e.g. \"risc0\", \"ML-DSA-44\"." },
+    "server": { "type": "string", "description": "Attesting authority / network identifier." },
+    "proof": { "type": "string", "description": "Opaque proof blob (hex/JSON/base64)." }
+  }
+}

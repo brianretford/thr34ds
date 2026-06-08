@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thr34ds.dev/schemas/signed_state_root.schema.json",
+  "title": "SignedStateRoot",
+  "description": "An actor-signed Merkle root over every thread's chain head.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["root", "leaf_count", "time", "algorithm", "public_key", "signature"],
+  "properties": {
+    "root": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Hex Merkle root over all thread chain heads." },
+    "leaf_count": { "type": "integer", "minimum": 0 },
+    "time": { "type": "string", "format": "date-time" },
+    "algorithm": { "type": "string", "examples": ["ML-DSA-65"] },
+    "public_key": { "type": "string", "pattern": "^[0-9a-f]+$" },
+    "signature": { "type": "string", "pattern": "^[0-9a-f]+$" }
+  }
+}

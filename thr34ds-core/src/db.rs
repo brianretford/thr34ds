@@ -226,6 +226,14 @@ impl Database {
         Self::from_conn(Self::connect()?)
     }
 
+    /// Open an ephemeral in-memory database (tests, previews, ports without a
+    /// writable data directory).
+    pub fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        Self::from_conn(conn)
+    }
+
     fn connect() -> Result<Connection> {
         if let Some(mut path) = dirs::data_local_dir() {
             path.push("thr34ds");
