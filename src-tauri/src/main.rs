@@ -11,11 +11,25 @@ fn main() {
         .manage(AppState::new(db))
         .invoke_handler(tauri::generate_handler![
             list_threads,
+            list_root_threads,
+            list_child_threads,
             create_thread,
             delete_thread,
             list_messages,
             create_message,
             delete_message,
+            list_respondents,
+            add_respondent,
+            summon_agent,
+            issue_summons,
+            list_summonses,
+            certify_summons,
+            list_timeline,
+            verify_thread,
+            state_root,
+            prove_thread,
+            timeline_public_key,
+            attach_anchor,
             get_synced_time,
         ])
         .run(tauri::generate_context!())
