@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>thr34ds</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Sidebar: thread list -->
+    <aside id="sidebar">
+      <header class="sidebar-header">
+        <h1>thr34ds</h1>
+        <button id="new-thread-btn" title="New thread">＋</button>
+      </header>
+
+      <div id="new-thread-form" class="hidden">
+        <input id="new-thread-title" type="text" placeholder="Thread title…" maxlength="120" />
+        <button id="new-thread-submit">Create</button>
+        <button id="new-thread-cancel">✕</button>
+      </div>
+
+      <ul id="thread-list"></ul>
+
+      <footer class="sidebar-footer">
+        <button id="sync-time-btn" title="Sync clock with atomic time servers">⏱ Sync time</button>
+        <span id="sync-status"></span>
+      </footer>
+    </aside>
+
+    <!-- Main area: message view -->
+    <main id="main">
+      <div id="empty-state">
+        <p>Select a thread or create a new one.</p>
+      </div>
+
+      <div id="thread-view" class="hidden">
+        <header id="thread-header">
+          <h2 id="thread-title"></h2>
+          <button id="delete-thread-btn" title="Delete thread">🗑</button>
+        </header>
+
+        <div id="message-list"></div>
+
+        <form id="message-form">
+          <textarea
+            id="message-input"
+            placeholder="Write a message…"
+            rows="3"
+            maxlength="4000"
+          ></textarea>
+          <button type="submit">Send</button>
+        </form>
+      </div>
+    </main>
+  </div>
+
+  <script src="main.js"></script>
+
+  <!-- Always-visible overlay: live clock + thread list -->
+  <div id="overlay">
+    <div id="overlay-clock"></div>
+    <ul id="overlay-thread-list"></ul>
+  </div>
+</body>
+</html>
