@@ -185,11 +185,18 @@ pub struct Posterity {
 /// A **clean cut**: a recorded, actor-signed Merkle root over every thread's
 /// chain head at a single point in time — one person, all their threads,
 /// committed at once. A cut can itself be settled on-chain (its `anchor`).
+///
+/// A cut also **references the posterities** recorded as of that moment: each is
+/// a sealed event in a thread chain, so the cut's signed state root already
+/// commits them, and the cut names them as a roll-up of every on-chain
+/// confirmation it covers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cut {
     pub id: String,
     /// The signed state root captured by this cut.
     pub state_root: SignedStateRoot,
+    /// The posterities (on-chain receipts) referenced by this cut.
+    pub posterities: Vec<Posterity>,
     /// The cut's on-chain receipt, once settled (its posterity).
     pub anchor: Option<Anchor>,
     /// When the cut was taken.
@@ -364,6 +371,7 @@ impl Database {
                  public_key  TEXT NOT NULL,
                  signature   TEXT NOT NULL,
                  anchor      TEXT,
+                 posterities TEXT,
                  recorded_at TEXT NOT NULL
              );
 
@@ -372,7 +380,13 @@ impl Database {
              CREATE INDEX IF NOT EXISTS idx_respondents_thread ON respondents(thread_id);
              CREATE INDEX IF NOT EXISTS idx_timeline_thread  ON timeline(thread_id, seq);
             ",
-        )
+        )?;
+        // Best-effort migration for databases created before cuts referenced
+        // posterities. Errors (e.g. column already exists) are ignored.
+        let _ = self
+            .conn
+            .execute("ALTER TABLE cuts ADD COLUMN posterities TEXT", []);
+        Ok(())
     }
 
     fn load_or_create_seed(&self) -> Result<String> {
@@ -583,16 +597,20 @@ impl Database {
     // ── Clean cuts (one person, all their threads, at a point in time) ───────
 
     /// Take a **clean cut**: compute and persist the actor-signed Merkle root
-    /// over every thread's chain head right now. Each call records a new
-    /// point-in-time snapshot.
+    /// over every thread's chain head right now, referencing every posterity
+    /// recorded as of this moment. Each call records a new point-in-time
+    /// snapshot.
     pub fn record_cut(&self) -> Result<Cut> {
         let sr = self.state_root()?;
+        let posterities = self.list_all_posterity()?;
+        let posterities_json = serde_json::to_string(&posterities)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         let id = Uuid::new_v4().to_string();
         let recorded_at = sr.time.clone();
         self.conn.execute(
             "INSERT INTO cuts
-                (id, root, leaf_count, time, algorithm, public_key, signature, anchor, recorded_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
+                (id, root, leaf_count, time, algorithm, public_key, signature, anchor, posterities, recorded_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9)",
             params![
                 id,
                 sr.root,
@@ -601,21 +619,47 @@ impl Database {
                 sr.algorithm,
                 sr.public_key,
                 sr.signature,
+                posterities_json,
                 recorded_at,
             ],
         )?;
         Ok(Cut {
             id,
             state_root: sr,
+            posterities,
             anchor: None,
             recorded_at,
         })
     }
 
+    /// Every posterity recorded across all threads, oldest first.
+    fn list_all_posterity(&self) -> Result<Vec<Posterity>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT thread_id, document_hash, anchor, seq, entry_hash, recorded_at
+               FROM posterity ORDER BY recorded_at ASC, document_hash ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Posterity {
+                thread_id: row.get(0)?,
+                document_hash: row.get(1)?,
+                anchor: decode_anchor(Some(row.get::<_, String>(2)?)).unwrap_or_else(|| Anchor {
+                    kind: String::new(),
+                    algorithm: String::new(),
+                    server: String::new(),
+                    proof: String::new(),
+                }),
+                seq: row.get::<_, i64>(3)? as u64,
+                entry_hash: row.get(4)?,
+                recorded_at: row.get(5)?,
+            })
+        })?;
+        rows.collect()
+    }
+
     /// All recorded cuts, most recent first.
     pub fn list_cuts(&self) -> Result<Vec<Cut>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, root, leaf_count, time, algorithm, public_key, signature, anchor, recorded_at
+            "SELECT id, root, leaf_count, time, algorithm, public_key, signature, anchor, posterities, recorded_at
                FROM cuts ORDER BY recorded_at DESC",
         )?;
         let rows = stmt.query_map([], Self::map_cut)?;
@@ -626,7 +670,7 @@ impl Database {
     pub fn get_cut(&self, id: &str) -> Result<Option<Cut>> {
         self.conn
             .query_row(
-                "SELECT id, root, leaf_count, time, algorithm, public_key, signature, anchor, recorded_at
+                "SELECT id, root, leaf_count, time, algorithm, public_key, signature, anchor, posterities, recorded_at
                    FROM cuts WHERE id = ?1",
                 params![id],
                 Self::map_cut,
@@ -646,7 +690,11 @@ impl Database {
                 signature: row.get(6)?,
             },
             anchor: decode_anchor(row.get::<_, Option<String>>(7)?),
-            recorded_at: row.get(8)?,
+            posterities: row
+                .get::<_, Option<String>>(8)?
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default(),
+            recorded_at: row.get(9)?,
         })
     }
 
@@ -1493,10 +1541,21 @@ mod tests {
         assert!(cut1.verify());
         assert_eq!(cut1.state_root.leaf_count, 2);
 
-        // Advance one thread, take another cut: the root moves.
+        // A cut with no posterities yet references none.
+        assert!(cut1.posterities.is_empty());
+
+        // Record a posterity, then take another cut: it references the posterity.
         db.create_message(&a.id, None, "advance A").unwrap();
+        let (s, _, _) = db.issue_summons(&a.id, "Agent", None, None, "Appear.", None).unwrap();
+        let anchor = Anchor::boundless("ethereum-sepolia", r#"{"tx_hash":"0xp"}"#);
+        db.record_posterity(&a.id, &s.content_hash(), &anchor).unwrap();
+
         let cut2 = db.record_cut().unwrap();
         assert_ne!(cut1.state_root.root, cut2.state_root.root);
+        assert_eq!(cut2.posterities.len(), 1, "future cut references the posterity");
+        assert_eq!(cut2.posterities[0].document_hash, s.content_hash());
+        // The reference round-trips through persistence.
+        assert_eq!(db.get_cut(&cut2.id).unwrap().unwrap().posterities.len(), 1);
 
         assert_eq!(db.list_cuts().unwrap().len(), 2);
         assert_eq!(db.get_cut(&cut1.id).unwrap().unwrap().id, cut1.id);
