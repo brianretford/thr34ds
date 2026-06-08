@@ -154,3 +154,38 @@ export function toAnchor(artifact) {
     proof: JSON.stringify(artifact),
   };
 }
+
+/**
+ * Project a receipt into the canonical **Boundless journal** — the single
+ * contract shared by the zkVM guest, the on-chain DocumentTimeOracle contract,
+ * and `schemas/boundless_journal.schema.json`. This is what gets committed
+ * in-zk and decoded on-chain (ABI: bytes32, uint256, uint256). The document
+ * hash (Roughtime nonce, or a cut's Merkle root) is 0x-prefixed for Solidity.
+ */
+export function toBoundlessJournal(artifact) {
+  const j = artifact.journal;
+  return {
+    document_hash: "0x" + j.nonce,
+    midpoint_unix_ms: j.midpoint_unix_ms,
+    radius_ms: j.radius_ms,
+  };
+}
+
+/**
+ * Structurally validate a Boundless journal against the shared contract before
+ * posting (the same invariants the guest and contract enforce). Returns
+ * `{ ok, errors }`. Mirrors `schemas/boundless_journal.schema.json`.
+ */
+export function validateBoundlessJournal(journal) {
+  const errors = [];
+  if (!/^0x[0-9a-fA-F]{64}$/.test(journal.document_hash ?? "")) {
+    errors.push("document_hash must be 0x + 64 hex (bytes32)");
+  }
+  if (!Number.isInteger(journal.midpoint_unix_ms) || journal.midpoint_unix_ms < 1) {
+    errors.push("midpoint_unix_ms must be a positive integer");
+  }
+  if (!Number.isInteger(journal.radius_ms) || journal.radius_ms < 1) {
+    errors.push("radius_ms must be a positive integer");
+  }
+  return { ok: errors.length === 0, errors };
+}

@@ -21,7 +21,9 @@ fn main() {
         <(FixedBytes<32>, U256, U256)>::abi_decode(&input, true)
             .expect("malformed time-oracle request");
 
-    // Minimal well-formedness checks (a zero-radius window is meaningless).
+    // Enforce the shared journal contract in-zk — the same invariants declared
+    // in schemas/boundless_journal.schema.json and re-checked on-chain by
+    // DocumentTimeOracle.settle(). The proof attests these held.
     assert!(radius_ms > U256::ZERO, "radius must be positive");
     assert!(midpoint_ms > U256::ZERO, "midpoint must be set");
 

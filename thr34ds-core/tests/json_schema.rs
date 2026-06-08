@@ -19,6 +19,7 @@ const SIGNED_STATE_ROOT_SCHEMA: &str = include_str!("../../schemas/signed_state_
 const SUMMONS_SCHEMA: &str = include_str!("../../schemas/summons.schema.json");
 const POSTERITY_SCHEMA: &str = include_str!("../../schemas/posterity.schema.json");
 const CUT_SCHEMA: &str = include_str!("../../schemas/cut.schema.json");
+const BOUNDLESS_JOURNAL_SCHEMA: &str = include_str!("../../schemas/boundless_journal.schema.json");
 
 fn assert_conforms<T: Serialize>(schema_src: &str, value: &T, label: &str) {
     let schema: Value = serde_json::from_str(schema_src).expect("schema parses");
@@ -99,4 +100,28 @@ fn each_attested_document_in_each_cut_conforms() {
     assert_conforms(SIGNED_STATE_ROOT_SCHEMA, &cut.state_root, "SignedStateRoot");
     db.anchor_cut(&cut.id, &anchor).unwrap();
     assert_conforms(CUT_SCHEMA, &db.get_cut(&cut.id).unwrap().unwrap(), "Cut (anchored)");
+
+    // The on-chain Boundless journal derived from this cut (documentHash = the
+    // cut's Merkle root) must conform to the same contract the guest and the
+    // DocumentTimeOracle enforce. This is what "validate on-chain against the
+    // same contract" means: one journal shape, three enforcers.
+    let on_chain_journal = serde_json::json!({
+        "document_hash": format!("0x{}", cut.state_root.root),
+        "midpoint_unix_ms": 1_700_000_000_000_i64,
+        "radius_ms": 10_000
+    });
+    let schema: Value = serde_json::from_str(BOUNDLESS_JOURNAL_SCHEMA).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(
+        validator.is_valid(&on_chain_journal),
+        "the on-chain journal for a cut must conform to boundless_journal.schema.json"
+    );
+
+    // And a malformed journal (un-prefixed hash) must be rejected.
+    let bad = serde_json::json!({
+        "document_hash": cut.state_root.root, // missing 0x prefix
+        "midpoint_unix_ms": 1_700_000_000_000_i64,
+        "radius_ms": 10_000
+    });
+    assert!(!validator.is_valid(&bad), "schema must reject a non-bytes32 hash");
 }

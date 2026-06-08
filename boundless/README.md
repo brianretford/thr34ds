@@ -94,6 +94,21 @@ The host submits **one** request, waits for a prover to fulfil it, then calls
 layer, which converts a USD price to token via Boundless’s **built-in price
 oracle** at request time.
 
+## One journal contract, three enforcers
+
+The journal committed in-zk and decoded on-chain is a single shared contract,
+enforced in three places that cannot drift:
+
+| Enforcer | Where | Checks |
+|---|---|---|
+| **JSON Schema** | [`schemas/boundless_journal.schema.json`](../schemas/boundless_journal.schema.json) | off-chain validation (`oracle.js` `validateBoundlessJournal`) |
+| **zkVM guest** | `methods/guest/src/main.rs` | asserts the invariants in-zk before committing |
+| **Contract** | `DocumentTimeOracle.settle()` | re-checks on decode (`require` documentHash≠0, midpoint>0, radius>0) |
+
+ABI: `(bytes32 documentHash, uint256 midpointMs, uint256 radiusMs)`. For a clean
+cut, `documentHash` is the cut's Merkle root — so a single request checkpoints
+the whole system on-chain against the same contract.
+
 ## App integration
 
 The thr34ds core already produces the document hash:

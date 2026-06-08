@@ -51,6 +51,13 @@ contract DocumentTimeOracle {
         uint256 midpointMs,
         uint256 radiusMs
     ) external {
+        // On-chain validation of the shared journal contract — the same
+        // invariants asserted by the zkVM guest and declared in
+        // schemas/boundless_journal.schema.json (required + positive).
+        require(documentHash != bytes32(0), "documentHash required");
+        require(midpointMs > 0, "midpointMs must be positive");
+        require(radiusMs > 0, "radiusMs must be positive");
+
         // Reconstruct the journal the guest committed and verify the proof.
         bytes memory journal = abi.encode(documentHash, midpointMs, radiusMs);
         verifier.verify(seal, imageId, sha256(journal));
