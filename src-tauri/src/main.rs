@@ -36,6 +36,7 @@ fn main() {
             list_cuts,
             get_cut,
             anchor_cut,
+            settle_posterity,
             get_synced_time,
         ])
         .run(tauri::generate_context!())

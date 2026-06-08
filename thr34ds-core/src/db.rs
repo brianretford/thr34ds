@@ -427,6 +427,12 @@ impl Database {
         (now, self.time_source.clone())
     }
 
+    /// The current (atomic-sync-corrected) time as unix milliseconds. Used to
+    /// set a posterity attestation's window midpoint at settlement time.
+    pub fn now_millis(&self) -> i64 {
+        self.current_time().0.timestamp_millis()
+    }
+
     // ── Signed-time sealing ──────────────────────────────────────────────────
 
     /// Seal an event payload onto a thread's own chain and persist the entry.

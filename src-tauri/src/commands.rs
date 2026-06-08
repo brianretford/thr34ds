@@ -319,6 +319,82 @@ pub fn anchor_cut(input: AnchorCutInput, state: State<'_, AppState>) -> CmdResul
     Ok(db!(state).anchor_cut(&input.cut_id, &input.anchor)?)
 }
 
+// ── Live on-chain settlement (Boundless) ──────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct SettlePosterityInput {
+    pub thread_id: String,
+    /// The document's content hash (a sealed entry's payload hash). No 0x prefix.
+    pub document_hash: String,
+}
+
+/// Settle a document's time window on-chain via a single Boundless request, then
+/// record its posterity from the *real* settlement result.
+///
+/// Shells out to the configured Boundless requestor (so the heavy risc0/alloy
+/// deps stay out of the app build). Configuration via environment:
+///   BOUNDLESS_REQUESTOR_BIN  path to the built requestor (boundless/apps)
+///   RPC_URL, PRIVATE_KEY, DOCUMENT_TIME_ORACLE_ADDRESS   (read by the requestor)
+///   BOUNDLESS_PROGRAM_URL    optional uploaded guest URL
+///   BOUNDLESS_NETWORK        default "ethereum-sepolia"
+///   BOUNDLESS_RADIUS_MS      claimed-window radius, default 3_600_000
+#[tauri::command]
+pub fn settle_posterity(
+    input: SettlePosterityInput,
+    state: State<'_, AppState>,
+) -> CmdResult<thr34ds_core::Posterity> {
+    let bin = std::env::var("BOUNDLESS_REQUESTOR_BIN").map_err(|_| {
+        CommandError(
+            "Boundless is not configured. Set BOUNDLESS_REQUESTOR_BIN to the built requestor \
+             binary (see boundless/README.md), plus RPC_URL, PRIVATE_KEY and \
+             DOCUMENT_TIME_ORACLE_ADDRESS."
+                .into(),
+        )
+    })?;
+    let network = std::env::var("BOUNDLESS_NETWORK").unwrap_or_else(|_| "ethereum-sepolia".into());
+    let radius_ms: u64 = std::env::var("BOUNDLESS_RADIUS_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3_600_000);
+
+    let midpoint_ms = db!(state).now_millis();
+
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.arg("--document-hash")
+        .arg(format!("0x{}", input.document_hash))
+        .arg("--midpoint-ms")
+        .arg(midpoint_ms.to_string())
+        .arg("--radius-ms")
+        .arg(radius_ms.to_string());
+    if let Ok(url) = std::env::var("BOUNDLESS_PROGRAM_URL") {
+        cmd.arg("--program-url").arg(url);
+    }
+
+    let out = cmd
+        .output()
+        .map_err(|e| CommandError(format!("failed to run Boundless requestor '{bin}': {e}")))?;
+    if !out.status.success() {
+        return Err(CommandError(format!(
+            "Boundless settlement failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )));
+    }
+
+    // The requestor prints a JSON result as its final stdout line.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let proof = stdout
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| l.starts_with('{'))
+        .ok_or_else(|| CommandError("Boundless requestor produced no JSON result".into()))?;
+    serde_json::from_str::<serde_json::Value>(proof)
+        .map_err(|e| CommandError(format!("malformed requestor output: {e}")))?;
+
+    let anchor = Anchor::boundless(network, proof);
+    Ok(db!(state).record_posterity(&input.thread_id, &input.document_hash, &anchor)?)
+}
+
 // ── Time-sync command ──────────────────────────────────────────────────────
 
 #[derive(Serialize)]

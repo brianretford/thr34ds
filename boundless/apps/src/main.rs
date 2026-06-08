@@ -138,5 +138,13 @@ async fn main() -> Result<()> {
         receipt.transaction_hash
     );
 
+    // Machine-readable result on stdout for callers (e.g. the thr34ds app),
+    // which parse the last JSON line into a posterity Anchor.
+    let network = std::env::var("BOUNDLESS_NETWORK").unwrap_or_else(|_| "ethereum-sepolia".to_string());
+    println!(
+        "{{\"status\":\"settled\",\"network\":\"{}\",\"document_hash\":\"{}\",\"midpoint_ms\":{},\"radius_ms\":{},\"request_id\":\"{}\",\"tx_hash\":\"{}\"}}",
+        network, args.document_hash, args.midpoint_ms, args.radius_ms, request_id, receipt.transaction_hash
+    );
+
     Ok(())
 }

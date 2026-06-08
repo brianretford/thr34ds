@@ -121,3 +121,27 @@ Feed that as `--document-hash`, and the attestation’s midpoint as `--midpoint-
 After settlement, store the returned tx hash / `request_id` in the core
 `signed_time::Anchor` (`kind = "boundless"`) so the app’s signed timeline records
 its on-chain time anchor.
+
+### Live settlement from the app
+
+The thr34ds app's **Record posterity on-chain** button calls the `settle_posterity`
+backend command, which shells out to this requestor, parses its final JSON line,
+builds the `Anchor`, and records the posterity. The requestor prints, on success:
+
+```json
+{"status":"settled","network":"ethereum-sepolia","document_hash":"0x…","midpoint_ms":…,"radius_ms":…,"request_id":"0x…","tx_hash":"0x…"}
+```
+
+Configure the app (env it inherits when launched, e.g. via `npm run dev` from a
+terminal that has these set):
+
+```sh
+export BOUNDLESS_REQUESTOR_BIN=/path/to/target/release/app   # this requestor
+export RPC_URL=…  PRIVATE_KEY=…  DOCUMENT_TIME_ORACLE_ADDRESS=0x…
+export BOUNDLESS_PROGRAM_URL=…        # optional: uploaded guest URL
+export BOUNDLESS_NETWORK=ethereum-sepolia   # optional
+export BOUNDLESS_RADIUS_MS=3600000          # optional
+```
+
+If `BOUNDLESS_REQUESTOR_BIN` is unset, `settle_posterity` returns a clear
+"Boundless is not configured" error instead of settling.

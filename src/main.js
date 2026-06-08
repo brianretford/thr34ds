@@ -171,6 +171,33 @@ async function devInvoke(cmd, args) {
         ) || null
       );
 
+    case "settle_posterity": {
+      // Browser demo: simulate a single Boundless request + settlement.
+      const { thread_id, document_hash } = args.input;
+      await new Promise((r) => setTimeout(r, 900));
+      const proof = JSON.stringify({
+        status: "settled",
+        network: "ethereum-sepolia (demo)",
+        document_hash: "0x" + document_hash,
+        request_id: "0x" + Math.random().toString(16).slice(2, 10),
+        tx_hash:
+          "0x" +
+          Array.from(crypto.getRandomValues(new Uint8Array(32)))
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join(""),
+        settled_at: Math.floor(Date.now() / 1000),
+      });
+      const anchor = {
+        kind: "boundless",
+        algorithm: "risc0",
+        server: "ethereum-sepolia (demo)",
+        proof,
+      };
+      return devInvoke("record_posterity", {
+        input: { thread_id, document_hash, anchor },
+      });
+    }
+
     case "record_cut": {
       const cut = {
         id: makeId(),
@@ -323,32 +350,22 @@ const randHex = (n) =>
     .join("");
 
 /**
- * Record a document's posterity on-chain: drive the status states, then persist
- * the anchor via the backend so the green "recorded forever" state is backed by
- * stored data. (Settlement is simulated here; a real deployment posts a single
- * Boundless request — see boundless/.)
+ * Record a document's posterity on-chain via a single Boundless request. The
+ * backend (settle_posterity) posts the request, awaits settlement, and records
+ * the posterity from the real result — so the green "recorded forever" state is
+ * backed by an actual on-chain proof. (In a plain browser the dev fallback
+ * simulates settlement.)
  */
 async function recordOnChain(documentHash, badge, btn) {
   if (btn) btn.remove();
-  const network = "ethereum-sepolia";
   renderPosterity(badge, STATE.SUBMITTING);
-  await sleep(700);
+  await sleep(150);
   renderPosterity(badge, STATE.SETTLING);
-  await sleep(700);
-
-  const proof = JSON.stringify({
-    request_id: "0x" + randHex(8),
-    tx_hash: "0x" + randHex(32),
-    settled_at: Math.floor(Date.now() / 1000),
-    document_hash: "0x" + documentHash,
-  });
-  const anchor = { kind: "boundless", algorithm: "risc0", server: network, proof };
-
   try {
-    await invoke("record_posterity", {
-      input: { thread_id: currentThreadId, document_hash: documentHash, anchor },
+    const posterity = await invoke("settle_posterity", {
+      input: { thread_id: currentThreadId, document_hash: documentHash },
     });
-    const { state, data } = stateFromAnchor(anchor);
+    const { state, data } = stateFromAnchor(posterity.anchor);
     renderPosterity(badge, state, data);
   } catch (err) {
     renderPosterity(badge, STATE.FAILED, { error: String(err) });
