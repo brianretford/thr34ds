@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use crate::merkle::{self, MerkleStep, MerkleTree};
 use crate::respondent::{Respondent, RespondentKind};
-use crate::signed_time::{self, verify_chain, Notary, SignedTimestamp, ALGORITHM, GENESIS_HASH};
+use crate::signed_time::{self, verify_chain, Anchor, Notary, SignedTimestamp, ALGORITHM, GENESIS_HASH};
 use crate::summons::Summons;
 
 const CATEGORY_SEP: char = '\u{1f}'; // ASCII unit separator
@@ -385,7 +385,7 @@ impl Database {
     pub fn list_timeline(&self, thread_id: &str) -> Result<Vec<SignedTimestamp>> {
         let mut stmt = self.conn.prepare(
             "SELECT seq, time, time_source, payload_hash, prev_hash, hash,
-                    algorithm, public_key, signature
+                    algorithm, public_key, signature, anchor
                FROM timeline
               WHERE thread_id = ?1
               ORDER BY seq ASC",
@@ -401,10 +401,32 @@ impl Database {
                 algorithm: row.get(6)?,
                 public_key: row.get(7)?,
                 signature: row.get(8)?,
-                anchor: None,
+                anchor: decode_anchor(row.get::<_, Option<String>>(9)?),
             })
         })?;
         rows.collect()
+    }
+
+    /// Attach an external time [`Anchor`] (e.g. an on-chain Boundless
+    /// settlement) to the sealed timeline entry whose payload hash matches —
+    /// closing the loop between an off-chain document and its on-chain proof.
+    ///
+    /// The anchor is not covered by the entry's signature (it carries its own
+    /// proof), so this is a safe post-hoc annotation. Returns `true` if a
+    /// matching entry was updated.
+    pub fn attach_anchor(
+        &self,
+        thread_id: &str,
+        payload_hash: &str,
+        anchor: &Anchor,
+    ) -> Result<bool> {
+        let json = serde_json::to_string(anchor)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let n = self.conn.execute(
+            "UPDATE timeline SET anchor = ?1 WHERE thread_id = ?2 AND payload_hash = ?3",
+            params![json, thread_id, payload_hash],
+        )?;
+        Ok(n > 0)
     }
 
     /// Verify a thread's chain end-to-end. `Ok(())` if intact; `Err(Some(i))`
@@ -921,6 +943,10 @@ fn decode_categories(s: Option<String>) -> Vec<String> {
     }
 }
 
+fn decode_anchor(s: Option<String>) -> Option<Anchor> {
+    s.and_then(|s| serde_json::from_str(&s).ok())
+}
+
 // ── Unit tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1149,6 +1175,41 @@ mod tests {
         let v = cert.verify();
         assert!(!v.content_committed);
         assert!(!v.ok());
+    }
+
+    #[test]
+    fn boundless_anchor_writes_back_to_the_timeline() {
+        let db = db();
+        let (t, _) = db.create_thread(None, "Matter").unwrap();
+        let (summons, _, ts) = db
+            .issue_summons(&t.id, "Agent", None, None, "Appear.", None)
+            .unwrap();
+
+        // The settled document is identified by its content hash == payload hash.
+        assert_eq!(ts.payload_hash, summons.content_hash());
+
+        let anchor = Anchor::boundless(
+            "ethereum-sepolia",
+            r#"{"request_id":"0xabc","tx_hash":"0xdef"}"#,
+        );
+        let updated = db
+            .attach_anchor(&t.id, &summons.content_hash(), &anchor)
+            .unwrap();
+        assert!(updated, "the summons entry should be anchored");
+
+        // The anchor is now persisted on the sealed entry, and the entry still
+        // verifies (anchors are not covered by the signature).
+        let entry = db
+            .list_timeline(&t.id)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.payload_hash == summons.content_hash())
+            .unwrap();
+        assert_eq!(entry.anchor.as_ref().map(|a| a.kind.as_str()), Some("boundless"));
+        assert!(entry.verify());
+
+        // Attaching to an unknown document touches nothing.
+        assert!(!db.attach_anchor(&t.id, &"0".repeat(64), &anchor).unwrap());
     }
 
     #[test]

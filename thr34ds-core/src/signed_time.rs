@@ -57,6 +57,21 @@ pub struct Anchor {
     pub proof: String,
 }
 
+impl Anchor {
+    /// Construct an anchor for an on-chain Boundless settlement: the document's
+    /// time window was proven and settled on-chain. `network` identifies the
+    /// chain (e.g. `"ethereum-sepolia"`); `proof` carries the settlement
+    /// reference (e.g. a JSON blob with `request_id` and `tx_hash`).
+    pub fn boundless(network: impl Into<String>, proof: impl Into<String>) -> Self {
+        Anchor {
+            kind: "boundless".to_string(),
+            algorithm: "risc0".to_string(),
+            server: network.into(),
+            proof: proof.into(),
+        }
+    }
+}
+
 /// One sealed entry on the signed timeline.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SignedTimestamp {
