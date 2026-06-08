@@ -38,8 +38,18 @@
       <div id="thread-view" class="hidden">
         <header id="thread-header">
           <h2 id="thread-title"></h2>
-          <button id="delete-thread-btn" title="Delete thread">🗑</button>
+          <div class="header-actions">
+            <button id="issue-summons-btn" class="mini" title="Issue a summons">+ Summons</button>
+            <button id="take-cut-btn" class="mini" title="Take a clean cut">⛓ Cut</button>
+            <button id="show-cuts-btn" class="mini" title="View cuts & posterity">Cuts</button>
+            <button id="delete-thread-btn" title="Delete thread">🗑</button>
+          </div>
         </header>
+
+        <section id="documents-panel">
+          <div class="panel-head"><span>Documents · post-quantum signed timeline</span></div>
+          <ul id="document-list"></ul>
+        </section>
 
         <div id="message-list"></div>
 
@@ -56,12 +66,23 @@
     </main>
   </div>
 
-  <script src="main.js"></script>
+  <script type="module" src="main.js"></script>
 
   <!-- Always-visible overlay: live clock + thread list -->
   <div id="overlay">
     <div id="overlay-clock"></div>
     <ul id="overlay-thread-list"></ul>
+  </div>
+
+  <!-- Cuts & posterity: each cut shows the posterities attached to it -->
+  <div id="cuts-modal" class="hidden">
+    <div class="cuts-card">
+      <div class="panel-head">
+        <span>Clean cuts · one person, all threads, in time</span>
+        <button id="close-cuts" class="mini">✕</button>
+      </div>
+      <ul id="cuts-list"></ul>
+    </div>
   </div>
 </body>
 </html>
