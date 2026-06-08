@@ -23,6 +23,7 @@ use uuid::Uuid;
 use crate::merkle::{self, MerkleStep, MerkleTree};
 use crate::respondent::{Respondent, RespondentKind};
 use crate::signed_time::{self, verify_chain, Notary, SignedTimestamp, ALGORITHM, GENESIS_HASH};
+use crate::summons::Summons;
 
 const CATEGORY_SEP: char = '\u{1f}'; // ASCII unit separator
 
@@ -111,6 +112,55 @@ impl ThreadInclusion {
             return false;
         };
         merkle::verify_proof(self.leaf.as_bytes(), &self.proof, &root)
+    }
+}
+
+/// A self-contained, verifiable bundle proving a summons: the document, the
+/// post-quantum-signed chain entry that sealed it, and a proof that entry's
+/// thread is committed under the one actor's signed Merkle root.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummonsCertificate {
+    pub summons: Summons,
+    /// The sealed timeline entry whose payload is the summons document.
+    pub entry: SignedTimestamp,
+    /// Proof the issuing thread is included under the signed state root.
+    pub inclusion: ThreadInclusion,
+}
+
+/// Outcome of verifying a [`SummonsCertificate`].
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SummonsVerification {
+    /// The sealed entry commits exactly the summons document.
+    pub content_committed: bool,
+    /// The entry's post-quantum signature verifies.
+    pub entry_signed: bool,
+    /// The issuing thread is included under the actor's signed root.
+    pub included_under_root: bool,
+    /// The entry belongs to the summons's matter thread.
+    pub matter_consistent: bool,
+}
+
+impl SummonsVerification {
+    /// All checks passed.
+    pub fn ok(&self) -> bool {
+        self.content_committed && self.entry_signed && self.included_under_root && self.matter_consistent
+    }
+}
+
+impl SummonsCertificate {
+    /// Verify every evidentiary property of the summons.
+    pub fn verify(&self) -> SummonsVerification {
+        SummonsVerification {
+            content_committed: self.entry.payload_hash == self.summons.content_hash(),
+            entry_signed: self.entry.verify(),
+            included_under_root: self.inclusion.verify(),
+            matter_consistent: self.inclusion.thread_id == self.summons.matter_thread_id,
+        }
+    }
+
+    /// A human-readable rendering of the underlying summons.
+    pub fn render_text(&self) -> String {
+        self.summons.render_text()
     }
 }
 
@@ -222,6 +272,22 @@ impl Database {
                  signature    TEXT NOT NULL,
                  anchor       TEXT,
                  UNIQUE(thread_id, seq)
+             );
+
+             CREATE TABLE IF NOT EXISTS summonses (
+                 id              TEXT PRIMARY KEY NOT NULL,
+                 thread_id       TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+                 matter_title    TEXT NOT NULL,
+                 issuer_key      TEXT NOT NULL,
+                 issuer_name     TEXT,
+                 agent_uid       TEXT NOT NULL,
+                 agent_name      TEXT NOT NULL,
+                 in_lieu_of_uid  TEXT,
+                 in_lieu_of_name TEXT,
+                 jurisdiction    TEXT,
+                 purpose         TEXT NOT NULL,
+                 content_hash    TEXT NOT NULL,
+                 issued_at       TEXT NOT NULL
              );
 
              CREATE INDEX IF NOT EXISTS idx_threads_parent   ON threads(parent_id, updated_at);
@@ -517,6 +583,8 @@ impl Database {
     /// Summon an agent that stands in for (and models the behavior of) a human
     /// respondent. The agent is a `KIND:application` vCard linked to the human
     /// via `RELATED;TYPE=agent`. Seals an `agent.summoned` event.
+    ///
+    /// For an evidentiary, legal-grade summons use [`Database::issue_summons`].
     pub fn summon_agent(
         &self,
         thread_id: &str,
@@ -531,9 +599,180 @@ impl Database {
         Ok((agent, ts))
     }
 
+    /// Issue a **legal-grade summons**: create the agent, build a self-contained
+    /// [`Summons`] document, persist it, and seal the document's canonical bytes
+    /// onto the thread's post-quantum chain (event `summons.issued`).
+    ///
+    /// The sealed entry's `payload_hash` equals the summons content hash, so the
+    /// signed timeline (and the actor-signed Merkle root) commit to the exact
+    /// document. The same content hash is the nonce used by the external
+    /// time-window attestation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn issue_summons(
+        &self,
+        thread_id: &str,
+        agent_name: &str,
+        in_lieu_of_uid: Option<&str>,
+        behavior: Option<&str>,
+        purpose: &str,
+        jurisdiction: Option<&str>,
+    ) -> Result<(Summons, Respondent, SignedTimestamp)> {
+        let thread = self
+            .get_thread(thread_id)?
+            .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
+
+        // The agent stood up by this summons.
+        let mut agent = Respondent::agent(Uuid::new_v4().to_string(), thread_id, agent_name);
+        agent.models_uid = in_lieu_of_uid.map(str::to_string);
+        agent.behavior = behavior.map(str::to_string);
+
+        // Resolve the human respondent's name (if known) for the document.
+        let in_lieu_of_name = match in_lieu_of_uid {
+            Some(uid) => self.respondent_name(uid)?,
+            None => None,
+        };
+
+        let summons = Summons {
+            id: Uuid::new_v4().to_string(),
+            issued_at: self.current_time().0,
+            matter_thread_id: thread_id.to_string(),
+            matter_title: thread.title,
+            issuer_key: self.timeline_public_key(),
+            issuer_name: None,
+            agent_uid: agent.uid.clone(),
+            agent_name: agent_name.to_string(),
+            in_lieu_of_uid: in_lieu_of_uid.map(str::to_string),
+            in_lieu_of_name,
+            purpose: purpose.to_string(),
+            jurisdiction: jurisdiction.map(str::to_string),
+        };
+
+        self.insert_respondent_row(&agent)?;
+        self.conn.execute(
+            "INSERT INTO summonses
+                (id, thread_id, matter_title, issuer_key, issuer_name, agent_uid,
+                 agent_name, in_lieu_of_uid, in_lieu_of_name, jurisdiction, purpose,
+                 content_hash, issued_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+            params![
+                summons.id,
+                summons.matter_thread_id,
+                summons.matter_title,
+                summons.issuer_key,
+                summons.issuer_name,
+                summons.agent_uid,
+                summons.agent_name,
+                summons.in_lieu_of_uid,
+                summons.in_lieu_of_name,
+                summons.jurisdiction,
+                summons.purpose,
+                summons.content_hash(),
+                summons.issued_at.to_rfc3339(),
+            ],
+        )?;
+
+        let ts = self.seal_event(
+            thread_id,
+            "summons.issued",
+            summons.canonical_document().as_bytes(),
+        )?;
+        Ok((summons, agent, ts))
+    }
+
+    fn respondent_name(&self, uid: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row("SELECT fn FROM respondents WHERE uid = ?1", params![uid], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()
+    }
+
+    /// All summonses issued in a thread, oldest first.
+    pub fn list_summonses(&self, thread_id: &str) -> Result<Vec<Summons>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, issued_at, thread_id, matter_title, issuer_key, issuer_name,
+                    agent_uid, agent_name, in_lieu_of_uid, in_lieu_of_name, purpose, jurisdiction
+               FROM summonses WHERE thread_id = ?1 ORDER BY issued_at ASC",
+        )?;
+        let rows = stmt.query_map(params![thread_id], |row| {
+            Ok(Summons {
+                id: row.get(0)?,
+                issued_at: parse_dt(row.get::<_, String>(1)?),
+                matter_thread_id: row.get(2)?,
+                matter_title: row.get(3)?,
+                issuer_key: row.get(4)?,
+                issuer_name: row.get(5)?,
+                agent_uid: row.get(6)?,
+                agent_name: row.get(7)?,
+                in_lieu_of_uid: row.get(8)?,
+                in_lieu_of_name: row.get(9)?,
+                purpose: row.get(10)?,
+                jurisdiction: row.get(11)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Assemble a verifiable [`SummonsCertificate`] for a summons: the document,
+    /// its sealed chain entry, and a proof it is committed under the one actor's
+    /// signed Merkle root. Returns `None` if no such summons exists.
+    pub fn certify_summons(&self, summons_id: &str) -> Result<Option<SummonsCertificate>> {
+        let Some((thread_id, content_hash)): Option<(String, String)> = self
+            .conn
+            .query_row(
+                "SELECT thread_id, content_hash FROM summonses WHERE id = ?1",
+                params![summons_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+
+        let summons = self
+            .list_summonses(&thread_id)?
+            .into_iter()
+            .find(|s| s.id == summons_id)
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+
+        let entry = self
+            .find_timeline_entry(&thread_id, &content_hash)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+
+        let inclusion = self
+            .prove_thread(&thread_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+
+        Ok(Some(SummonsCertificate {
+            summons,
+            entry,
+            inclusion,
+        }))
+    }
+
+    /// Find the timeline entry in `thread_id` whose payload hash matches.
+    fn find_timeline_entry(
+        &self,
+        thread_id: &str,
+        payload_hash: &str,
+    ) -> Result<Option<SignedTimestamp>> {
+        Ok(self
+            .list_timeline(thread_id)?
+            .into_iter()
+            .find(|e| e.payload_hash == payload_hash))
+    }
+
     /// Persist a respondent and seal its event (the sealed payload is the
     /// respondent's full vCard, so the chain commits to its identity).
     fn insert_respondent(&self, r: &Respondent, event_kind: &str) -> Result<SignedTimestamp> {
+        self.insert_respondent_row(r)?;
+        self.seal_event(&r.thread_id, event_kind, r.to_vcard().as_bytes())
+    }
+
+    /// Persist a respondent row without sealing an event. Used by callers (such
+    /// as issuing a summons) that seal a richer document instead of the bare
+    /// vCard.
+    fn insert_respondent_row(&self, r: &Respondent) -> Result<()> {
         self.conn.execute(
             "INSERT INTO respondents
                 (uid, thread_id, kind, fn, family_name, given_name, nickname, email,
@@ -562,7 +801,7 @@ impl Database {
                 r.created_at.to_rfc3339(),
             ],
         )?;
-        self.seal_event(&r.thread_id, event_kind, r.to_vcard().as_bytes())
+        Ok(())
     }
 
     /// List a thread's respondents (humans and agents), oldest first.
@@ -859,6 +1098,57 @@ mod tests {
         let mut proof = db.prove_thread(&a.id).unwrap().unwrap();
         proof.leaf = format!("{}:{}", a.id, "0".repeat(64)); // forge the chain head
         assert!(!proof.verify());
+    }
+
+    #[test]
+    fn issued_summons_seals_the_document_and_certifies() {
+        let db = db();
+        let (t, _) = db.create_thread(None, "Acme v. Roe").unwrap();
+        let (jane, _) = db.add_respondent(&t.id, "Jane Roe").unwrap();
+
+        let (summons, agent, ts) = db
+            .issue_summons(
+                &t.id,
+                "Roe (agent)",
+                Some(&jane.uid),
+                Some("Answers as the respondent would."),
+                "Respond to interrogatories within 30 days.",
+                Some("Delaware"),
+            )
+            .unwrap();
+
+        // The agent stands in for the human, and the sealed entry commits the
+        // exact summons document.
+        assert!(agent.is_agent());
+        assert_eq!(agent.models_uid.as_deref(), Some(jane.uid.as_str()));
+        assert_eq!(summons.in_lieu_of_name.as_deref(), Some("Jane Roe"));
+        assert_eq!(ts.payload_hash, summons.content_hash());
+        assert!(ts.verify());
+
+        // The certificate verifies on every evidentiary axis.
+        let cert = db.certify_summons(&summons.id).unwrap().expect("exists");
+        let v = cert.verify();
+        assert!(v.ok(), "summons certificate must fully verify: {v:?}");
+        assert!(cert.render_text().contains("Jane Roe"));
+
+        // It is listed for the matter.
+        assert_eq!(db.list_summonses(&t.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn tampered_summons_fails_certification() {
+        let db = db();
+        let (t, _) = db.create_thread(None, "Matter").unwrap();
+        let (s, _, _) = db
+            .issue_summons(&t.id, "Agent", None, None, "Appear.", None)
+            .unwrap();
+
+        let mut cert = db.certify_summons(&s.id).unwrap().unwrap();
+        // Forge the document after issuance: it no longer matches the seal.
+        cert.summons.purpose = "Do something entirely different.".into();
+        let v = cert.verify();
+        assert!(!v.content_committed);
+        assert!(!v.ok());
     }
 
     #[test]
