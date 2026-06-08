@@ -111,6 +111,8 @@ const newThreadCancel = document.getElementById("new-thread-cancel");
 const deleteThreadBtn = document.getElementById("delete-thread-btn");
 const syncTimeBtn     = document.getElementById("sync-time-btn");
 const syncStatus      = document.getElementById("sync-status");
+const overlayClock      = document.getElementById("overlay-clock");
+const overlayThreadList = document.getElementById("overlay-thread-list");
 
 // ── Thread list ──────────────────────────────────────────────────────────────
 
@@ -139,6 +141,7 @@ async function loadThreads() {
     li.appendChild(delBtn);
     threadList.appendChild(li);
   }
+  refreshOverlayThreads(threads);
 }
 
 // ── Select / open a thread ───────────────────────────────────────────────────
@@ -275,6 +278,40 @@ function formatDate(isoStr) {
     return new Date(isoStr).toLocaleString();
   } catch {
     return isoStr;
+  }
+}
+
+// ── Overlay: live clock + thread list ───────────────────────────────────────
+
+/** Update the overlay clock display with the current local time. */
+function tickClock() {
+  overlayClock.textContent = new Date().toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+tickClock();
+setInterval(tickClock, 1000);
+
+/** Rebuild the overlay thread list. Called whenever threads change. */
+function refreshOverlayThreads(threads) {
+  overlayThreadList.innerHTML = "";
+  if (!threads.length) {
+    const li = document.createElement("li");
+    li.className = "overlay-empty";
+    li.textContent = "No threads yet";
+    overlayThreadList.appendChild(li);
+    return;
+  }
+  for (const t of threads) {
+    const li = document.createElement("li");
+    li.textContent = t.title;
+    li.title = t.title;
+    if (t.id === currentThreadId) li.classList.add("active");
+    li.addEventListener("click", () => selectThread(t.id, t.title));
+    overlayThreadList.appendChild(li);
   }
 }
 

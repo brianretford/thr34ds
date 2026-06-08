@@ -106,3 +106,64 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   #sidebar { width: 100%; position: absolute; z-index: 10; transform: translateX(0); }
   #main   { margin-left: 0; }
 }
+
+/* ── Always-visible overlay ──────────────────────────────────────────────── */
+#overlay {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 1000;
+  min-width: 220px;
+  max-width: 320px;
+  background: rgba(15, 15, 17, 0.88);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+  pointer-events: all;
+  overflow: hidden;
+}
+
+#overlay-clock {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text);
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#overlay-thread-list {
+  list-style: none;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+#overlay-thread-list li {
+  padding: 9px 16px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background 0.1s, color 0.1s;
+}
+
+#overlay-thread-list li:last-child { border-bottom: none; }
+
+#overlay-thread-list li:hover { background: var(--bg-high); color: var(--text); }
+
+#overlay-thread-list li.active { color: #fff; background: var(--accent-dark); }
+
+#overlay-thread-list .overlay-empty {
+  color: var(--text-dim);
+  font-style: italic;
+  cursor: default;
+}
+
+#overlay-thread-list .overlay-empty:hover { background: none; color: var(--text-dim); }
