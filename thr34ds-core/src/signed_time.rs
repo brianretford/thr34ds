@@ -209,6 +209,14 @@ impl Notary {
         &self.last_hash
     }
 
+    /// Produce a detached post-quantum signature over `msg` with the actor's
+    /// key. Does **not** touch the chain — used to sign aggregate commitments
+    /// such as a Merkle state root. Returns the hex-encoded signature.
+    pub fn sign_message(&self, msg: &[u8]) -> String {
+        let sig: Signature<MlDsa65> = self.signing_key.sign(msg);
+        hex::encode(sig.encode().as_slice())
+    }
+
     /// Seal an event payload at the given time onto the timeline.
     pub fn seal(
         &mut self,
@@ -302,6 +310,18 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
     hex::encode(h.finalize())
+}
+
+/// Verify a detached signature (as produced by [`Notary::sign_message`])
+/// against a public key. Both key and signature are hex-encoded.
+pub fn verify_signature(public_key_hex: &str, msg: &[u8], signature_hex: &str) -> bool {
+    let Some(vk) = decode_verifying_key(public_key_hex) else {
+        return false;
+    };
+    let Some(sig) = decode_signature(signature_hex) else {
+        return false;
+    };
+    vk.verify(msg, &sig).is_ok()
 }
 
 fn decode_verifying_key(hex_str: &str) -> Option<VerifyingKey<MlDsa65>> {
