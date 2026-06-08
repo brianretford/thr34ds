@@ -6,7 +6,8 @@ pub mod summons;
 pub mod timesync;
 
 pub use db::{
-    Database, SignedStateRoot, SummonsCertificate, SummonsVerification, ThreadInclusion,
+    Cut, Database, Posterity, SignedStateRoot, SummonsCertificate, SummonsVerification,
+    ThreadInclusion,
 };
 pub use merkle::{MerkleStep, MerkleTree};
 pub use respondent::{Respondent, RespondentKind};

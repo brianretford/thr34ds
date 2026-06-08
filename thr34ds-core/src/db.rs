@@ -164,6 +164,51 @@ impl SummonsCertificate {
     }
 }
 
+/// The **posterity** of a document: a one-time, permanent record that its
+/// external on-chain receipt (e.g. a Boundless settlement) was received and
+/// bound into the document's own signed timeline — the receipt of the receipt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Posterity {
+    pub thread_id: String,
+    /// The document's content hash (payload hash of its sealed entry).
+    pub document_hash: String,
+    /// The external on-chain receipt that was recorded.
+    pub anchor: Anchor,
+    /// Sequence number of the `posterity` event sealed onto the thread chain.
+    pub seq: u64,
+    /// Hash of that sealed posterity entry.
+    pub entry_hash: String,
+    /// When the posterity was recorded.
+    pub recorded_at: String,
+}
+
+/// A **clean cut**: a recorded, actor-signed Merkle root over every thread's
+/// chain head at a single point in time — one person, all their threads,
+/// committed at once. A cut can itself be settled on-chain (its `anchor`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Cut {
+    pub id: String,
+    /// The signed state root captured by this cut.
+    pub state_root: SignedStateRoot,
+    /// The cut's on-chain receipt, once settled (its posterity).
+    pub anchor: Option<Anchor>,
+    /// When the cut was taken.
+    pub recorded_at: String,
+}
+
+impl Cut {
+    /// The cut's content hash — the Merkle root that identifies it (and the
+    /// nonce used to anchor the whole cut on-chain in a single request).
+    pub fn document_hash(&self) -> &str {
+        &self.state_root.root
+    }
+
+    /// Verify the actor's signature over the cut's root.
+    pub fn verify(&self) -> bool {
+        self.state_root.verify()
+    }
+}
+
 /// Wrapper around the local SQLite connection plus the signed-time notary.
 pub struct Database {
     conn: Connection,
@@ -288,6 +333,30 @@ impl Database {
                  purpose         TEXT NOT NULL,
                  content_hash    TEXT NOT NULL,
                  issued_at       TEXT NOT NULL
+             );
+
+             CREATE TABLE IF NOT EXISTS posterity (
+                 thread_id     TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+                 document_hash TEXT NOT NULL,
+                 anchor        TEXT NOT NULL,
+                 seq           INTEGER NOT NULL,
+                 entry_hash    TEXT NOT NULL,
+                 recorded_at   TEXT NOT NULL,
+                 PRIMARY KEY (thread_id, document_hash)
+             );
+
+             -- A clean cut: a recorded, actor-signed Merkle root over every
+             -- thread's chain head, at a point in time.
+             CREATE TABLE IF NOT EXISTS cuts (
+                 id          TEXT PRIMARY KEY NOT NULL,
+                 root        TEXT NOT NULL,
+                 leaf_count  INTEGER NOT NULL,
+                 time        TEXT NOT NULL,
+                 algorithm   TEXT NOT NULL,
+                 public_key  TEXT NOT NULL,
+                 signature   TEXT NOT NULL,
+                 anchor      TEXT,
+                 recorded_at TEXT NOT NULL
              );
 
              CREATE INDEX IF NOT EXISTS idx_threads_parent   ON threads(parent_id, updated_at);
@@ -425,6 +494,162 @@ impl Database {
         let n = self.conn.execute(
             "UPDATE timeline SET anchor = ?1 WHERE thread_id = ?2 AND payload_hash = ?3",
             params![json, thread_id, payload_hash],
+        )?;
+        Ok(n > 0)
+    }
+
+    // ── Posterity (record the receipt of the receipt, once) ──────────────────
+
+    /// Record the **posterity** of a document: seal a one-time `posterity` event
+    /// onto the document's thread chain committing its external on-chain receipt
+    /// (the receipt of the receipt), and annotate the document's own entry with
+    /// the anchor. Idempotent — recorded exactly once per `(thread, document)`;
+    /// repeat calls return the existing posterity without sealing again.
+    pub fn record_posterity(
+        &self,
+        thread_id: &str,
+        document_hash: &str,
+        anchor: &Anchor,
+    ) -> Result<Posterity> {
+        if let Some(existing) = self.get_posterity(thread_id, document_hash)? {
+            return Ok(existing);
+        }
+
+        // The receipt of the receipt: a sealed entry committing the document and
+        // the external receipt that attested it.
+        let payload = format!(
+            "posterity/v1\ndocument={document_hash}\nanchor_kind={}\nanchor_server={}\nanchor_proof={}",
+            anchor.kind, anchor.server, anchor.proof
+        );
+        let ts = self.seal_event(thread_id, "posterity", payload.as_bytes())?;
+
+        // Bind the receipt onto the original document's entry too.
+        self.attach_anchor(thread_id, document_hash, anchor)?;
+
+        let anchor_json = serde_json::to_string(anchor)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        self.conn.execute(
+            "INSERT INTO posterity (thread_id, document_hash, anchor, seq, entry_hash, recorded_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![thread_id, document_hash, anchor_json, ts.seq as i64, ts.hash, ts.time],
+        )?;
+
+        Ok(Posterity {
+            thread_id: thread_id.to_string(),
+            document_hash: document_hash.to_string(),
+            anchor: anchor.clone(),
+            seq: ts.seq,
+            entry_hash: ts.hash,
+            recorded_at: ts.time,
+        })
+    }
+
+    /// Fetch a document's posterity, if it has been recorded.
+    pub fn get_posterity(&self, thread_id: &str, document_hash: &str) -> Result<Option<Posterity>> {
+        self.conn
+            .query_row(
+                "SELECT anchor, seq, entry_hash, recorded_at
+                   FROM posterity WHERE thread_id = ?1 AND document_hash = ?2",
+                params![thread_id, document_hash],
+                |row| {
+                    Ok(Posterity {
+                        thread_id: thread_id.to_string(),
+                        document_hash: document_hash.to_string(),
+                        anchor: decode_anchor(Some(row.get::<_, String>(0)?)).unwrap_or_else(|| {
+                            Anchor {
+                                kind: String::new(),
+                                algorithm: String::new(),
+                                server: String::new(),
+                                proof: String::new(),
+                            }
+                        }),
+                        seq: row.get::<_, i64>(1)? as u64,
+                        entry_hash: row.get(2)?,
+                        recorded_at: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
+    // ── Clean cuts (one person, all their threads, at a point in time) ───────
+
+    /// Take a **clean cut**: compute and persist the actor-signed Merkle root
+    /// over every thread's chain head right now. Each call records a new
+    /// point-in-time snapshot.
+    pub fn record_cut(&self) -> Result<Cut> {
+        let sr = self.state_root()?;
+        let id = Uuid::new_v4().to_string();
+        let recorded_at = sr.time.clone();
+        self.conn.execute(
+            "INSERT INTO cuts
+                (id, root, leaf_count, time, algorithm, public_key, signature, anchor, recorded_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
+            params![
+                id,
+                sr.root,
+                sr.leaf_count as i64,
+                sr.time,
+                sr.algorithm,
+                sr.public_key,
+                sr.signature,
+                recorded_at,
+            ],
+        )?;
+        Ok(Cut {
+            id,
+            state_root: sr,
+            anchor: None,
+            recorded_at,
+        })
+    }
+
+    /// All recorded cuts, most recent first.
+    pub fn list_cuts(&self) -> Result<Vec<Cut>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, root, leaf_count, time, algorithm, public_key, signature, anchor, recorded_at
+               FROM cuts ORDER BY recorded_at DESC",
+        )?;
+        let rows = stmt.query_map([], Self::map_cut)?;
+        rows.collect()
+    }
+
+    /// Fetch a single cut.
+    pub fn get_cut(&self, id: &str) -> Result<Option<Cut>> {
+        self.conn
+            .query_row(
+                "SELECT id, root, leaf_count, time, algorithm, public_key, signature, anchor, recorded_at
+                   FROM cuts WHERE id = ?1",
+                params![id],
+                Self::map_cut,
+            )
+            .optional()
+    }
+
+    fn map_cut(row: &rusqlite::Row<'_>) -> rusqlite::Result<Cut> {
+        Ok(Cut {
+            id: row.get(0)?,
+            state_root: SignedStateRoot {
+                root: row.get(1)?,
+                leaf_count: row.get::<_, i64>(2)? as usize,
+                time: row.get(3)?,
+                algorithm: row.get(4)?,
+                public_key: row.get(5)?,
+                signature: row.get(6)?,
+            },
+            anchor: decode_anchor(row.get::<_, Option<String>>(7)?),
+            recorded_at: row.get(8)?,
+        })
+    }
+
+    /// Record the **posterity of a cut**: bind the cut's on-chain receipt onto
+    /// the cut, once. Returns `false` if the cut is unknown or already anchored.
+    pub fn anchor_cut(&self, cut_id: &str, anchor: &Anchor) -> Result<bool> {
+        let json = serde_json::to_string(anchor)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let n = self.conn.execute(
+            "UPDATE cuts SET anchor = ?1 WHERE id = ?2 AND anchor IS NULL",
+            params![json, cut_id],
         )?;
         Ok(n > 0)
     }
@@ -1210,6 +1435,69 @@ mod tests {
 
         // Attaching to an unknown document touches nothing.
         assert!(!db.attach_anchor(&t.id, &"0".repeat(64), &anchor).unwrap());
+    }
+
+    #[test]
+    fn posterity_is_recorded_once() {
+        let db = db();
+        let (t, _) = db.create_thread(None, "Matter").unwrap();
+        let (summons, _, ts) = db
+            .issue_summons(&t.id, "Agent", None, None, "Appear.", None)
+            .unwrap();
+        let doc = summons.content_hash();
+        assert_eq!(ts.payload_hash, doc);
+
+        let anchor = Anchor::boundless("ethereum-sepolia", r#"{"tx_hash":"0xabc"}"#);
+        let timeline_before = db.list_timeline(&t.id).unwrap().len();
+
+        // First record: seals a one-time posterity event (receipt of receipt).
+        let p1 = db.record_posterity(&t.id, &doc, &anchor).unwrap();
+        assert_eq!(p1.anchor.kind, "boundless");
+        let after_first = db.list_timeline(&t.id).unwrap().len();
+        assert_eq!(after_first, timeline_before + 1, "posterity seals one entry");
+
+        // The document entry now carries the anchor.
+        let doc_entry = db
+            .list_timeline(&t.id)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.payload_hash == doc)
+            .unwrap();
+        assert!(doc_entry.anchor.is_some());
+
+        // Recording again is idempotent — once, forever. No new entry.
+        let p2 = db.record_posterity(&t.id, &doc, &anchor).unwrap();
+        assert_eq!(p2.seq, p1.seq);
+        assert_eq!(db.list_timeline(&t.id).unwrap().len(), after_first);
+
+        // The chain still verifies.
+        assert_eq!(db.verify_thread(&t.id).unwrap(), Ok(()));
+    }
+
+    #[test]
+    fn clean_cut_snapshots_all_threads() {
+        let db = db();
+        let (a, _) = db.create_thread(None, "A").unwrap();
+        db.create_thread(None, "B").unwrap();
+
+        // A cut commits the whole system at this moment, signed by the actor.
+        let cut1 = db.record_cut().unwrap();
+        assert!(cut1.verify());
+        assert_eq!(cut1.state_root.leaf_count, 2);
+
+        // Advance one thread, take another cut: the root moves.
+        db.create_message(&a.id, None, "advance A").unwrap();
+        let cut2 = db.record_cut().unwrap();
+        assert_ne!(cut1.state_root.root, cut2.state_root.root);
+
+        assert_eq!(db.list_cuts().unwrap().len(), 2);
+        assert_eq!(db.get_cut(&cut1.id).unwrap().unwrap().id, cut1.id);
+
+        // The cut can be anchored on-chain exactly once (its posterity).
+        let anchor = Anchor::boundless("ethereum-sepolia", r#"{"tx_hash":"0xcut"}"#);
+        assert!(db.anchor_cut(&cut1.id, &anchor).unwrap());
+        assert!(!db.anchor_cut(&cut1.id, &anchor).unwrap(), "anchored once");
+        assert!(db.get_cut(&cut1.id).unwrap().unwrap().anchor.is_some());
     }
 
     #[test]

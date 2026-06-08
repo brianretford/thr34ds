@@ -30,6 +30,12 @@ fn main() {
             prove_thread,
             timeline_public_key,
             attach_anchor,
+            record_posterity,
+            get_posterity,
+            record_cut,
+            list_cuts,
+            get_cut,
+            anchor_cut,
             get_synced_time,
         ])
         .run(tauri::generate_context!())

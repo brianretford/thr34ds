@@ -3,7 +3,7 @@ use tauri::State;
 
 use crate::AppState;
 use thr34ds_core::{
-    db::{Message, SignedStateRoot, SummonsCertificate, Thread, ThreadInclusion},
+    db::{Cut, Message, Posterity, SignedStateRoot, SummonsCertificate, Thread, ThreadInclusion},
     signed_time::{Anchor, SignedTimestamp},
     timesync, Respondent, Summons,
 };
@@ -262,6 +262,61 @@ pub struct AttachAnchorInput {
 #[tauri::command]
 pub fn attach_anchor(input: AttachAnchorInput, state: State<'_, AppState>) -> CmdResult<bool> {
     Ok(db!(state).attach_anchor(&input.thread_id, &input.payload_hash, &input.anchor)?)
+}
+
+// ── Posterity & clean cuts ────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RecordPosterityInput {
+    pub thread_id: String,
+    /// Content hash of the document whose on-chain receipt is being recorded.
+    pub document_hash: String,
+    pub anchor: Anchor,
+}
+
+/// Record the posterity of a document (the receipt of its on-chain receipt),
+/// once. Idempotent.
+#[tauri::command]
+pub fn record_posterity(input: RecordPosterityInput, state: State<'_, AppState>) -> CmdResult<Posterity> {
+    Ok(db!(state).record_posterity(&input.thread_id, &input.document_hash, &input.anchor)?)
+}
+
+/// Fetch a document's posterity, if recorded.
+#[tauri::command]
+pub fn get_posterity(
+    thread_id: String,
+    document_hash: String,
+    state: State<'_, AppState>,
+) -> CmdResult<Option<Posterity>> {
+    Ok(db!(state).get_posterity(&thread_id, &document_hash)?)
+}
+
+/// Take a clean cut: an actor-signed Merkle root over every thread at this moment.
+#[tauri::command]
+pub fn record_cut(state: State<'_, AppState>) -> CmdResult<Cut> {
+    Ok(db!(state).record_cut()?)
+}
+
+#[tauri::command]
+pub fn list_cuts(state: State<'_, AppState>) -> CmdResult<Vec<Cut>> {
+    Ok(db!(state).list_cuts()?)
+}
+
+#[tauri::command]
+pub fn get_cut(id: String, state: State<'_, AppState>) -> CmdResult<Option<Cut>> {
+    Ok(db!(state).get_cut(&id)?)
+}
+
+#[derive(Deserialize)]
+pub struct AnchorCutInput {
+    pub cut_id: String,
+    pub anchor: Anchor,
+}
+
+/// Record a cut's on-chain receipt (its posterity), once.
+#[tauri::command]
+pub fn anchor_cut(input: AnchorCutInput, state: State<'_, AppState>) -> CmdResult<bool> {
+    Ok(db!(state).anchor_cut(&input.cut_id, &input.anchor)?)
 }
 
 // ── Time-sync command ──────────────────────────────────────────────────────
