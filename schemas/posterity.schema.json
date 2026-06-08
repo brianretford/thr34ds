@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thr34ds.dev/schemas/posterity.schema.json",
+  "title": "Posterity",
+  "description": "A one-time record that a document's external on-chain receipt was received and bound into its signed timeline (the receipt of the receipt).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["thread_id", "document_hash", "anchor", "seq", "entry_hash", "recorded_at"],
+  "properties": {
+    "thread_id": { "type": "string" },
+    "document_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "anchor": { "$ref": "#/$defs/anchor" },
+    "seq": { "type": "integer", "minimum": 1 },
+    "entry_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "recorded_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "algorithm", "server", "proof"],
+      "properties": {
+        "kind": { "type": "string" },
+        "algorithm": { "type": "string" },
+        "server": { "type": "string" },
+        "proof": { "type": "string" }
+      }
+    }
+  }
+}

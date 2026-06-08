@@ -1,12 +1,11 @@
-use tauri::State;
-use chrono::Utc;
-use uuid::Uuid;
 use serde::{Deserialize, Serialize};
+use tauri::State;
 
 use crate::AppState;
 use thr34ds_core::{
-    db::{Thread, Message},
-    timesync,
+    db::{Cut, Message, Posterity, SignedStateRoot, SummonsCertificate, Thread, ThreadInclusion},
+    signed_time::{Anchor, SignedTimestamp},
+    timesync, Respondent, Summons,
 };
 
 // ── Error type ─────────────────────────────────────────────────────────────
@@ -22,111 +21,398 @@ impl<E: std::fmt::Display> From<E> for CommandError {
 
 type CmdResult<T> = Result<T, CommandError>;
 
-// ── Thread commands ────────────────────────────────────────────────────────
+/// Lock the database, mapping a poisoned mutex to a command error.
+macro_rules! db {
+    ($state:expr) => {
+        $state.db.lock().map_err(|e| CommandError(e.to_string()))?
+    };
+}
 
-/// Return all threads ordered by most-recently-updated first.
+// ── Threads ──────────────────────────────────────────────────────────────────
+
+/// All threads (flat), most-recently-updated first.
 #[tauri::command]
 pub fn list_threads(state: State<'_, AppState>) -> CmdResult<Vec<Thread>> {
-    let db = state.db.lock().map_err(|e| CommandError(e.to_string()))?;
-    Ok(db.list_threads()?)
+    Ok(db!(state).list_threads()?)
+}
+
+/// Root threads (no parent).
+#[tauri::command]
+pub fn list_root_threads(state: State<'_, AppState>) -> CmdResult<Vec<Thread>> {
+    Ok(db!(state).list_root_threads()?)
+}
+
+/// Direct sub-threads of a parent.
+#[tauri::command]
+pub fn list_child_threads(parent_id: String, state: State<'_, AppState>) -> CmdResult<Vec<Thread>> {
+    Ok(db!(state).list_child_threads(&parent_id)?)
 }
 
 #[derive(Deserialize)]
 pub struct CreateThreadInput {
     pub title: String,
+    /// Parent thread id for a sub-thread; omit for a root thread.
+    #[serde(default)]
+    pub parent_id: Option<String>,
 }
 
-/// Create a new thread and return it.
+/// Create a thread (root or sub-thread) and seal its genesis event.
 #[tauri::command]
-pub fn create_thread(
-    input: CreateThreadInput,
-    state: State<'_, AppState>,
-) -> CmdResult<Thread> {
-    let now = Utc::now();
-    let thread = Thread {
-        id: Uuid::new_v4().to_string(),
-        title: input.title,
-        created_at: now,
-        updated_at: now,
-    };
-    let db = state.db.lock().map_err(|e| CommandError(e.to_string()))?;
-    db.insert_thread(&thread)?;
+pub fn create_thread(input: CreateThreadInput, state: State<'_, AppState>) -> CmdResult<Thread> {
+    let (thread, _ts) = db!(state).create_thread(input.parent_id.as_deref(), &input.title)?;
     Ok(thread)
 }
 
-/// Delete a thread (and all its messages via cascade).
+/// Delete a thread and everything beneath it.
 #[tauri::command]
-pub fn delete_thread(
-    id: String,
-    state: State<'_, AppState>,
-) -> CmdResult<()> {
-    let db = state.db.lock().map_err(|e| CommandError(e.to_string()))?;
-    db.delete_thread(&id)?;
+pub fn delete_thread(id: String, state: State<'_, AppState>) -> CmdResult<()> {
+    db!(state).delete_thread(&id)?;
     Ok(())
 }
 
-// ── Message commands ───────────────────────────────────────────────────────
+// ── Messages ─────────────────────────────────────────────────────────────────
 
-/// Return all messages in a thread ordered by creation time.
 #[tauri::command]
-pub fn list_messages(
-    thread_id: String,
-    state: State<'_, AppState>,
-) -> CmdResult<Vec<Message>> {
-    let db = state.db.lock().map_err(|e| CommandError(e.to_string()))?;
-    Ok(db.list_messages(&thread_id)?)
+pub fn list_messages(thread_id: String, state: State<'_, AppState>) -> CmdResult<Vec<Message>> {
+    Ok(db!(state).list_messages(&thread_id)?)
 }
 
 #[derive(Deserialize)]
 pub struct CreateMessageInput {
     pub thread_id: String,
     pub body: String,
+    /// The respondent (human or agent) credited with this message.
+    #[serde(default)]
+    pub respondent_uid: Option<String>,
 }
 
-/// Append a new message to a thread and return it.
+/// Append a message attributed to a respondent and seal it onto the chain.
 #[tauri::command]
-pub fn create_message(
-    input: CreateMessageInput,
-    state: State<'_, AppState>,
-) -> CmdResult<Message> {
-    let msg = Message {
-        id: Uuid::new_v4().to_string(),
-        thread_id: input.thread_id,
-        body: input.body,
-        created_at: Utc::now(),
-    };
-    let db = state.db.lock().map_err(|e| CommandError(e.to_string()))?;
-    db.insert_message(&msg)?;
+pub fn create_message(input: CreateMessageInput, state: State<'_, AppState>) -> CmdResult<Message> {
+    let (msg, _ts) =
+        db!(state).create_message(&input.thread_id, input.respondent_uid.as_deref(), &input.body)?;
     Ok(msg)
 }
 
-/// Delete a single message.
 #[tauri::command]
-pub fn delete_message(
-    id: String,
-    state: State<'_, AppState>,
-) -> CmdResult<()> {
-    let db = state.db.lock().map_err(|e| CommandError(e.to_string()))?;
-    db.delete_message(&id)?;
+pub fn delete_message(id: String, state: State<'_, AppState>) -> CmdResult<()> {
+    db!(state).delete_message(&id)?;
     Ok(())
+}
+
+// ── Respondents (vCard) ──────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn list_respondents(thread_id: String, state: State<'_, AppState>) -> CmdResult<Vec<Respondent>> {
+    Ok(db!(state).list_respondents(&thread_id)?)
+}
+
+#[derive(Deserialize)]
+pub struct AddRespondentInput {
+    pub thread_id: String,
+    pub name: String,
+}
+
+/// Add a human respondent (`KIND:individual`).
+#[tauri::command]
+pub fn add_respondent(input: AddRespondentInput, state: State<'_, AppState>) -> CmdResult<Respondent> {
+    let (r, _ts) = db!(state).add_respondent(&input.thread_id, &input.name)?;
+    Ok(r)
+}
+
+#[derive(Deserialize)]
+pub struct SummonAgentInput {
+    pub thread_id: String,
+    pub name: String,
+    /// The human respondent the agent stands in for.
+    #[serde(default)]
+    pub models_uid: Option<String>,
+    /// The behavior the agent models.
+    #[serde(default)]
+    pub behavior: Option<String>,
+}
+
+/// Summon an agent (`KIND:application`) that models a human respondent.
+#[tauri::command]
+pub fn summon_agent(input: SummonAgentInput, state: State<'_, AppState>) -> CmdResult<Respondent> {
+    let (agent, _ts) = db!(state).summon_agent(
+        &input.thread_id,
+        &input.name,
+        input.models_uid.as_deref(),
+        input.behavior.as_deref(),
+    )?;
+    Ok(agent)
+}
+
+// ── Summonses (legal-grade) ──────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct IssueSummonsInput {
+    pub thread_id: String,
+    pub agent_name: String,
+    #[serde(default)]
+    pub in_lieu_of_uid: Option<String>,
+    #[serde(default)]
+    pub behavior: Option<String>,
+    pub purpose: String,
+    #[serde(default)]
+    pub jurisdiction: Option<String>,
+}
+
+/// Issue a legal-grade summons: create the agent, build and seal the summons
+/// document. Returns the summons document.
+#[tauri::command]
+pub fn issue_summons(input: IssueSummonsInput, state: State<'_, AppState>) -> CmdResult<Summons> {
+    let (summons, _agent, _ts) = db!(state).issue_summons(
+        &input.thread_id,
+        &input.agent_name,
+        input.in_lieu_of_uid.as_deref(),
+        input.behavior.as_deref(),
+        &input.purpose,
+        input.jurisdiction.as_deref(),
+    )?;
+    Ok(summons)
+}
+
+#[tauri::command]
+pub fn list_summonses(thread_id: String, state: State<'_, AppState>) -> CmdResult<Vec<Summons>> {
+    Ok(db!(state).list_summonses(&thread_id)?)
+}
+
+#[derive(Serialize)]
+pub struct CertifiedSummons {
+    pub certificate: SummonsCertificate,
+    pub content_committed: bool,
+    pub entry_signed: bool,
+    pub included_under_root: bool,
+    pub matter_consistent: bool,
+    pub ok: bool,
+    pub render: String,
+}
+
+/// Produce a verifiable summons certificate together with its verification.
+#[tauri::command]
+pub fn certify_summons(id: String, state: State<'_, AppState>) -> CmdResult<Option<CertifiedSummons>> {
+    let Some(cert) = db!(state).certify_summons(&id)? else {
+        return Ok(None);
+    };
+    let v = cert.verify();
+    Ok(Some(CertifiedSummons {
+        content_committed: v.content_committed,
+        entry_signed: v.entry_signed,
+        included_under_root: v.included_under_root,
+        matter_consistent: v.matter_consistent,
+        ok: v.ok(),
+        render: cert.render_text(),
+        certificate: cert,
+    }))
+}
+
+// ── Signed timeline & proofs ──────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn list_timeline(thread_id: String, state: State<'_, AppState>) -> CmdResult<Vec<SignedTimestamp>> {
+    Ok(db!(state).list_timeline(&thread_id)?)
+}
+
+#[derive(Serialize)]
+pub struct VerifyThreadResult {
+    pub ok: bool,
+    /// Index of the first bad entry, if any.
+    pub bad_index: Option<usize>,
+}
+
+/// Verify a thread's chain end-to-end.
+#[tauri::command]
+pub fn verify_thread(thread_id: String, state: State<'_, AppState>) -> CmdResult<VerifyThreadResult> {
+    Ok(match db!(state).verify_thread(&thread_id)? {
+        Ok(()) => VerifyThreadResult { ok: true, bad_index: None },
+        Err(i) => VerifyThreadResult { ok: false, bad_index: Some(i) },
+    })
+}
+
+/// The actor-signed Merkle root over every thread's chain head.
+#[tauri::command]
+pub fn state_root(state: State<'_, AppState>) -> CmdResult<SignedStateRoot> {
+    Ok(db!(state).state_root()?)
+}
+
+/// Prove a thread is committed under the signed state root.
+#[tauri::command]
+pub fn prove_thread(thread_id: String, state: State<'_, AppState>) -> CmdResult<Option<ThreadInclusion>> {
+    Ok(db!(state).prove_thread(&thread_id)?)
+}
+
+/// The app's post-quantum custodian public key.
+#[tauri::command]
+pub fn timeline_public_key(state: State<'_, AppState>) -> CmdResult<String> {
+    Ok(db!(state).timeline_public_key())
+}
+
+#[derive(Deserialize)]
+pub struct AttachAnchorInput {
+    pub thread_id: String,
+    /// Payload hash of the document/entry to anchor (e.g. a summons content hash).
+    pub payload_hash: String,
+    pub anchor: Anchor,
+}
+
+/// Attach an external/on-chain time anchor (e.g. a Boundless settlement) to a
+/// sealed timeline entry. Returns whether a matching entry was updated.
+#[tauri::command]
+pub fn attach_anchor(input: AttachAnchorInput, state: State<'_, AppState>) -> CmdResult<bool> {
+    Ok(db!(state).attach_anchor(&input.thread_id, &input.payload_hash, &input.anchor)?)
+}
+
+// ── Posterity & clean cuts ────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RecordPosterityInput {
+    pub thread_id: String,
+    /// Content hash of the document whose on-chain receipt is being recorded.
+    pub document_hash: String,
+    pub anchor: Anchor,
+}
+
+/// Record the posterity of a document (the receipt of its on-chain receipt),
+/// once. Idempotent.
+#[tauri::command]
+pub fn record_posterity(input: RecordPosterityInput, state: State<'_, AppState>) -> CmdResult<Posterity> {
+    Ok(db!(state).record_posterity(&input.thread_id, &input.document_hash, &input.anchor)?)
+}
+
+/// Fetch a document's posterity, if recorded.
+#[tauri::command]
+pub fn get_posterity(
+    thread_id: String,
+    document_hash: String,
+    state: State<'_, AppState>,
+) -> CmdResult<Option<Posterity>> {
+    Ok(db!(state).get_posterity(&thread_id, &document_hash)?)
+}
+
+/// Take a clean cut: an actor-signed Merkle root over every thread at this moment.
+#[tauri::command]
+pub fn record_cut(state: State<'_, AppState>) -> CmdResult<Cut> {
+    Ok(db!(state).record_cut()?)
+}
+
+#[tauri::command]
+pub fn list_cuts(state: State<'_, AppState>) -> CmdResult<Vec<Cut>> {
+    Ok(db!(state).list_cuts()?)
+}
+
+#[tauri::command]
+pub fn get_cut(id: String, state: State<'_, AppState>) -> CmdResult<Option<Cut>> {
+    Ok(db!(state).get_cut(&id)?)
+}
+
+#[derive(Deserialize)]
+pub struct AnchorCutInput {
+    pub cut_id: String,
+    pub anchor: Anchor,
+}
+
+/// Record a cut's on-chain receipt (its posterity), once.
+#[tauri::command]
+pub fn anchor_cut(input: AnchorCutInput, state: State<'_, AppState>) -> CmdResult<bool> {
+    Ok(db!(state).anchor_cut(&input.cut_id, &input.anchor)?)
+}
+
+// ── Live on-chain settlement (Boundless) ──────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct SettlePosterityInput {
+    pub thread_id: String,
+    /// The document's content hash (a sealed entry's payload hash). No 0x prefix.
+    pub document_hash: String,
+}
+
+/// Settle a document's time window on-chain via a single Boundless request, then
+/// record its posterity from the *real* settlement result.
+///
+/// Shells out to the configured Boundless requestor (so the heavy risc0/alloy
+/// deps stay out of the app build). Configuration via environment:
+///   BOUNDLESS_REQUESTOR_BIN  path to the built requestor (boundless/apps)
+///   RPC_URL, PRIVATE_KEY, DOCUMENT_TIME_ORACLE_ADDRESS   (read by the requestor)
+///   BOUNDLESS_PROGRAM_URL    optional uploaded guest URL
+///   BOUNDLESS_NETWORK        default "ethereum-sepolia"
+///   BOUNDLESS_RADIUS_MS      claimed-window radius, default 3_600_000
+#[tauri::command]
+pub fn settle_posterity(
+    input: SettlePosterityInput,
+    state: State<'_, AppState>,
+) -> CmdResult<thr34ds_core::Posterity> {
+    let bin = std::env::var("BOUNDLESS_REQUESTOR_BIN").map_err(|_| {
+        CommandError(
+            "Boundless is not configured. Set BOUNDLESS_REQUESTOR_BIN to the built requestor \
+             binary (see boundless/README.md), plus RPC_URL, PRIVATE_KEY and \
+             DOCUMENT_TIME_ORACLE_ADDRESS."
+                .into(),
+        )
+    })?;
+    let network = std::env::var("BOUNDLESS_NETWORK").unwrap_or_else(|_| "ethereum-sepolia".into());
+    let radius_ms: u64 = std::env::var("BOUNDLESS_RADIUS_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3_600_000);
+
+    let midpoint_ms = db!(state).now_millis();
+
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.arg("--document-hash")
+        .arg(format!("0x{}", input.document_hash))
+        .arg("--midpoint-ms")
+        .arg(midpoint_ms.to_string())
+        .arg("--radius-ms")
+        .arg(radius_ms.to_string());
+    if let Ok(url) = std::env::var("BOUNDLESS_PROGRAM_URL") {
+        cmd.arg("--program-url").arg(url);
+    }
+
+    let out = cmd
+        .output()
+        .map_err(|e| CommandError(format!("failed to run Boundless requestor '{bin}': {e}")))?;
+    if !out.status.success() {
+        return Err(CommandError(format!(
+            "Boundless settlement failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )));
+    }
+
+    // The requestor prints a JSON result as its final stdout line.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let proof = stdout
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| l.starts_with('{'))
+        .ok_or_else(|| CommandError("Boundless requestor produced no JSON result".into()))?;
+    serde_json::from_str::<serde_json::Value>(proof)
+        .map_err(|e| CommandError(format!("malformed requestor output: {e}")))?;
+
+    let anchor = Anchor::boundless(network, proof);
+    Ok(db!(state).record_posterity(&input.thread_id, &input.document_hash, &anchor)?)
 }
 
 // ── Time-sync command ──────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 pub struct SyncedTimeResponse {
-    /// ISO-8601 UTC timestamp from the NTP server.
     pub utc_now: String,
-    /// Clock offset between NTP and local system clock (milliseconds).
     pub offset_ms: i64,
-    /// NTP server that responded.
     pub server: String,
 }
 
-/// Query a public NTP server and return the current atomic-clock-synced time.
+/// Query a public NTP server, record the offset so subsequent sealed times use
+/// the corrected clock, and return the synced time.
 #[tauri::command]
-pub fn get_synced_time() -> CmdResult<SyncedTimeResponse> {
+pub fn get_synced_time(state: State<'_, AppState>) -> CmdResult<SyncedTimeResponse> {
     let result = timesync::query_ntp()?;
+    {
+        let mut db = state.db.lock().map_err(|e| CommandError(e.to_string()))?;
+        db.set_synced_time(result.offset_ms, &result.server);
+    }
     Ok(SyncedTimeResponse {
         utc_now: result.utc_now.to_rfc3339(),
         offset_ms: result.offset_ms,

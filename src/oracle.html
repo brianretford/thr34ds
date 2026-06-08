@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>thr34ds · document time-window oracle</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      background: #0b0f14; color: #d7e0ea; margin: 0; padding: 2rem;
+      max-width: 880px; margin-inline: auto;
+    }
+    h1 { font-size: 1.2rem; }
+    p.lede { color: #8aa0b6; margin-top: -0.4rem; }
+    fieldset { border: 1px solid #233040; border-radius: 8px; margin: 1rem 0; }
+    legend { color: #8aa0b6; padding: 0 .4rem; }
+    textarea, input { width: 100%; box-sizing: border-box; background:#0f1620;
+      color:#d7e0ea; border:1px solid #233040; border-radius:6px; padding:.5rem; font:inherit; }
+    button { background:#1d4ed8; color:#fff; border:0; border-radius:6px;
+      padding:.5rem .9rem; font:inherit; cursor:pointer; margin-right:.4rem; }
+    button:disabled { background:#27313d; color:#5b6b7c; cursor:not-allowed; }
+    .status { display:inline-block; padding:.2rem .5rem; border-radius:6px; font-size:.85rem; }
+    .status.success { background:#0e2a1a; color:#34d399; }
+    #logger { background:#06090d; border:1px solid #233040; border-radius:6px;
+      padding:.6rem; height:160px; overflow:auto; font-size:.8rem; line-height:1.5; }
+    pre { background:#06090d; border:1px solid #233040; border-radius:6px;
+      padding:.6rem; overflow:auto; font-size:.78rem; }
+    label { font-size:.85rem; color:#8aa0b6; }
+  </style>
+</head>
+<body>
+  <h1>document time-window oracle</h1>
+  <p class="lede">
+    Prove a document existed within a bounded time window — post-quantum
+    (ML-DSA-65) Roughtime-style signature, wrapped in a mock RISC&nbsp;Zero
+    journal for on-chain verification.
+  </p>
+
+  <fieldset>
+    <legend>1 · oracle</legend>
+    <button id="btnInit">Arm oracle (keygen)</button>
+    <span id="serverStatus" class="status">● Server idle</span>
+  </fieldset>
+
+  <fieldset>
+    <legend>2 · document</legend>
+    <label for="document">Document text (hashed client-side):</label>
+    <textarea id="document" rows="3">The quick brown fox signs at a post-quantum time.</textarea>
+    <p>
+      <label for="radius">Window radius (ms):</label>
+      <input id="radius" type="number" value="10000" style="width:8rem" />
+    </p>
+    <button id="btnProve" disabled>Prove time window</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>3 · receipt</legend>
+    <div id="proofOutput" style="display:none">
+      <pre id="proofData"></pre>
+    </div>
+    <button id="btnVerify" disabled>Verify (mock on-chain)</button>
+    <div id="contractStatus" class="status" style="margin-top:.6rem">State: pending</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>log</legend>
+    <div id="logger"></div>
+  </fieldset>
+
+  <script type="module">
+    import {
+      keygen,
+      proveDocumentTimeWindow,
+      verifyDocumentTimeWindow,
+      bytesToHex,
+      toAnchor,
+    } from "./oracle.js";
+
+    let keypair = null;
+    let artifact = null;
+
+    function logMatrix(message) {
+      const el = document.getElementById("logger");
+      const ts = new Date().toISOString().split("T")[1].slice(0, -1);
+      el.innerHTML += `[${ts}] ${message}<br>`;
+      el.scrollTop = el.scrollHeight;
+    }
+
+    document.getElementById("btnInit").onclick = async () => {
+      document.getElementById("btnInit").disabled = true;
+      logMatrix("ML-DSA: generating browser demo keypair...");
+      keypair = await keygen();
+      const pkRoot = bytesToHex(keypair.publicKey).slice(0, 48);
+      logMatrix(`ORACLE: public key root 0x${pkRoot}...`);
+      const statusEl = document.getElementById("serverStatus");
+      statusEl.innerText = "● Server Armed (ML-DSA-65 demo key)";
+      statusEl.className = "status success";
+      document.getElementById("btnProve").disabled = false;
+    };
+
+    document.getElementById("btnProve").onclick = async () => {
+      document.getElementById("btnProve").disabled = true;
+      const document_ = document.getElementById("document").value;
+      const radiusMs = Number(document.getElementById("radius").value) || 10_000;
+
+      logMatrix("ORACLE: signing document time-window journal with ML-DSA...");
+      artifact = await proveDocumentTimeWindow(keypair, document_, {
+        radiusMs,
+        source: "local-demo-roughtime",
+      });
+
+      logMatrix("CLIENT: verifying ML-DSA signature + document commitment...");
+      const pre = await verifyDocumentTimeWindow(keypair, artifact, { document: document_ });
+      if (!pre.ok) {
+        logMatrix("FAIL: self-check rejected (sig/doc/window).");
+        return;
+      }
+      logMatrix("RISC0 MOCK: verified guest execution; emitting journal + mock seal.");
+
+      document.getElementById("proofData").textContent = JSON.stringify(artifact, null, 2);
+      document.getElementById("proofOutput").style.display = "block";
+      document.getElementById("btnVerify").disabled = false;
+      logMatrix(`ANCHOR: ${JSON.stringify(toAnchor(artifact)).slice(0, 80)}...`);
+    };
+
+    document.getElementById("btnVerify").onclick = async () => {
+      document.getElementById("btnVerify").disabled = true;
+      const j = artifact.journal;
+      logMatrix(`VERIFIER: journal window [${j.midpoint_unix_ms - j.radius_ms}, ${j.midpoint_unix_ms + j.radius_ms}]`);
+      logMatrix("VERIFIER: mock RISC Zero seal accepted for demo purposes.");
+
+      const res = await verifyDocumentTimeWindow(keypair, artifact, {
+        document: document.getElementById("document").value,
+      });
+      const el = document.getElementById("contractStatus");
+      if (!res.ok) {
+        el.innerHTML = "❌ rejected (sig/doc/window)";
+        el.className = "status";
+        logMatrix(`FAIL: sigOk=${res.sigOk} docOk=${res.documentOk} inWindow=${res.inWindow}`);
+        return;
+      }
+      el.innerText = "State: Verified 🟢 (Mock Receipt Accepted)";
+      el.className = "status success";
+      logMatrix("SUCCESS: ML-DSA document time-window attestation mapped into a RISC0-style journal.");
+    };
+  </script>
+</body>
+</html>

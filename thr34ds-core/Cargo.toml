@@ -10,3 +10,14 @@ chrono   = { version = "0.4",  features = ["serde"] }
 uuid     = { version = "1",    features = ["v4"] }
 serde    = { version = "1",    features = ["derive"] }
 dirs     = "5"
+
+# ── Post-quantum cryptographically signed time (the skeleton) ─────────────────
+# ML-DSA (FIPS 204 / Dilithium), pure-Rust so it cross-compiles to mobile.
+ml-dsa    = "0.1"
+rand_core = { version = "0.9", features = ["os_rng"] }
+sha2      = "0.10"
+hex       = "0.4"
+serde_json = "1"
+
+[dev-dependencies]
+jsonschema = "0.26"

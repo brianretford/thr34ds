@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thr34ds.dev/schemas/signed_timestamp.schema.json",
+  "title": "SignedTimestamp",
+  "description": "One sealed entry on a thread's post-quantum signed timeline.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "seq", "time", "time_source", "payload_hash",
+    "prev_hash", "hash", "algorithm", "public_key", "signature"
+  ],
+  "properties": {
+    "seq": { "type": "integer", "minimum": 1, "description": "Monotonic sequence number (1-based)." },
+    "time": { "type": "string", "format": "date-time" },
+    "time_source": { "type": "string" },
+    "payload_hash": { "$ref": "#/$defs/sha256Hex" },
+    "prev_hash": { "$ref": "#/$defs/sha256Hex" },
+    "hash": { "$ref": "#/$defs/sha256Hex" },
+    "algorithm": { "type": "string", "examples": ["ML-DSA-65"] },
+    "public_key": { "$ref": "#/$defs/hex" },
+    "signature": { "$ref": "#/$defs/hex" },
+    "anchor": {
+      "description": "Optional external time attestation.",
+      "anyOf": [{ "$ref": "#/$defs/anchor" }, { "type": "null" }]
+    }
+  },
+  "$defs": {
+    "sha256Hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "hex": { "type": "string", "pattern": "^[0-9a-f]+$" },
+    "anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "algorithm", "server", "proof"],
+      "properties": {
+        "kind": { "type": "string" },
+        "algorithm": { "type": "string" },
+        "server": { "type": "string" },
+        "proof": { "type": "string" }
+      }
+    }
+  }
+}

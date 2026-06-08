@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thr34ds.dev/schemas/summons.schema.json",
+  "title": "Summons",
+  "description": "A legal-grade summons document: an agent stood up in lieu of a human respondent.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id", "issued_at", "matter_thread_id", "matter_title", "issuer_key",
+    "issuer_name", "agent_uid", "agent_name", "in_lieu_of_uid",
+    "in_lieu_of_name", "purpose", "jurisdiction"
+  ],
+  "properties": {
+    "id": { "type": "string" },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "matter_thread_id": { "type": "string" },
+    "matter_title": { "type": "string" },
+    "issuer_key": { "type": "string", "description": "Hex public key of the issuing actor." },
+    "issuer_name": { "type": ["string", "null"] },
+    "agent_uid": { "type": "string", "description": "vCard UID of the summoned agent." },
+    "agent_name": { "type": "string" },
+    "in_lieu_of_uid": { "type": ["string", "null"], "description": "UID of the human respondent stood in for." },
+    "in_lieu_of_name": { "type": ["string", "null"] },
+    "purpose": { "type": "string" },
+    "jurisdiction": { "type": ["string", "null"] }
+  }
+}

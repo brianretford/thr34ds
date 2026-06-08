@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thr34ds.dev/schemas/boundless_journal.schema.json",
+  "title": "BoundlessJournal",
+  "description": "The canonical journal committed by the time-oracle guest and decoded on-chain. This is the single contract shared by three enforcers: the zkVM guest (asserts it before committing), the DocumentTimeOracle contract (re-checks it on decode), and this JSON Schema (off-chain validation). ABI: (bytes32 documentHash, uint256 midpointMs, uint256 radiusMs). For a clean cut, documentHash is the cut's Merkle root.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["document_hash", "midpoint_unix_ms", "radius_ms"],
+  "properties": {
+    "document_hash": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{64}$",
+      "description": "bytes32 document hash (the Roughtime nonce, or a cut's Merkle root)."
+    },
+    "midpoint_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Claimed window midpoint (unix ms). Must be positive (guest + contract enforce)."
+    },
+    "radius_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Claimed window radius (ms). Must be positive (guest + contract enforce)."
+    }
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thr34ds.dev/schemas/cut.schema.json",
+  "title": "Cut",
+  "description": "A clean cut: a recorded, actor-signed Merkle root over every thread's chain head at a point in time. One person, all their threads, committed at once.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "state_root", "posterities", "recorded_at"],
+  "properties": {
+    "id": { "type": "string" },
+    "state_root": { "$ref": "#/$defs/signedStateRoot" },
+    "posterities": {
+      "type": "array",
+      "description": "The posterities (on-chain receipts) this cut references.",
+      "items": { "$ref": "#/$defs/posterity" }
+    },
+    "anchor": {
+      "description": "The cut's on-chain receipt, once settled (its posterity).",
+      "anyOf": [{ "$ref": "#/$defs/anchor" }, { "type": "null" }]
+    },
+    "recorded_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "posterity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["thread_id", "document_hash", "anchor", "seq", "entry_hash", "recorded_at"],
+      "properties": {
+        "thread_id": { "type": "string" },
+        "document_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "anchor": { "$ref": "#/$defs/anchor" },
+        "seq": { "type": "integer", "minimum": 1 },
+        "entry_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "recorded_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "signedStateRoot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root", "leaf_count", "time", "algorithm", "public_key", "signature"],
+      "properties": {
+        "root": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "leaf_count": { "type": "integer", "minimum": 0 },
+        "time": { "type": "string", "format": "date-time" },
+        "algorithm": { "type": "string" },
+        "public_key": { "type": "string", "pattern": "^[0-9a-f]+$" },
+        "signature": { "type": "string", "pattern": "^[0-9a-f]+$" }
+      }
+    },
+    "anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "algorithm", "server", "proof"],
+      "properties": {
+        "kind": { "type": "string" },
+        "algorithm": { "type": "string" },
+        "server": { "type": "string" },
+        "proof": { "type": "string" }
+      }
+    }
+  }
+}
