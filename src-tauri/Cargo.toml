@@ -1,0 +1,29 @@
+[package]
+name = "thr34ds"
+version = "0.1.0"
+description = "A cross-platform threads app with local storage and atomic clock sync"
+authors = []
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "thr34ds_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+thr34ds-core   = { path = "../thr34ds-core" }
+tauri          = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde          = { version = "1", features = ["derive"] }
+serde_json     = "1"
+chrono         = { version = "0.4", features = ["serde"] }
+uuid           = { version = "1", features = ["v4"] }
+
+[profile.release]
+# Profile is defined in the workspace root Cargo.toml
+
+

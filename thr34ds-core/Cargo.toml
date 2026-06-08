@@ -1,0 +1,12 @@
+[package]
+name = "thr34ds-core"
+version = "0.1.0"
+edition = "2021"
+description = "Pure-Rust core logic for thr34ds: local SQLite storage and NTP atomic-clock sync"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono   = { version = "0.4",  features = ["serde"] }
+uuid     = { version = "1",    features = ["v4"] }
+serde    = { version = "1",    features = ["derive"] }
+dirs     = "5"
