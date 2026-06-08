@@ -68,6 +68,7 @@ contract DocumentTimeOracle {
             midpointMs <= nowMs + radiusMs && nowMs <= midpointMs + radiusMs,
             "chain time outside claimed window"
         );
+        require(!attestations[documentHash].exists, "document already settled");
 
         attestations[documentHash] = Attestation({
             midpointMs: midpointMs,
